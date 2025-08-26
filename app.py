@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
@@ -274,68 +275,114 @@ def load_data():
     return movie_df, rating_df
 
 @st.cache_data
-def build_content_similarity(movie_df):
-    """Build content-based similarity matrix with caching"""
+def build_content_vectors(movie_df):
+    """Build TF-IDF vectors for content-based recommendations"""
     vectorizer = TfidfVectorizer(stop_words='english')
-    vectors = vectorizer.fit_transform(movie_df['genres']).toarray()
-    sim_matrix = cosine_similarity(vectors)
+    tfidf_vectors = vectorizer.fit_transform(movie_df['genres'])
     
-    simi_cnt_df = pd.DataFrame(sim_matrix, 
-                               index=movie_df['title'], 
-                               columns=movie_df['title'])
-    return simi_cnt_df
+    # Create a mapping from title to index for quick lookup
+    title_to_idx = {title: idx for idx, title in enumerate(movie_df['title'])}
+    
+    return tfidf_vectors, title_to_idx, movie_df['title'].tolist()
 
 @st.cache_data
-def build_collaborative_similarity(movie_df, rating_df):
-    """Build collaborative filtering similarity matrix with caching"""
+def build_collaborative_vectors(movie_df, rating_df):
+    """Build rating vectors for collaborative filtering"""
     rate_m_df = pd.merge(movie_df, rating_df, on='movieId')[['title','userId','rating']]
     rating_per_user = pd.pivot_table(data=rate_m_df, index='title',
                                      columns='userId', values='rating').fillna(0)
     
-    rating_matrix = cosine_similarity(rating_per_user.values)
-    simi_colb_df = pd.DataFrame(rating_matrix, 
-                                index=rating_per_user.index, 
-                                columns=rating_per_user.index)
-    return simi_colb_df
+    # Create a mapping from title to index for quick lookup
+    title_to_idx = {title: idx for idx, title in enumerate(rating_per_user.index)}
+    
+    return rating_per_user.values, title_to_idx, rating_per_user.index.tolist()
 
-def content_recommend(title, simi_cnt_df):
-    """Content-based recommendation"""
+def content_recommend_on_demand(title, tfidf_vectors, title_to_idx, all_titles, top_k=10):
+    """Content-based recommendation with on-demand similarity computation"""
     title = title.lower()
-    if title not in simi_cnt_df.index:
-        return pd.DataFrame(columns=["movie","content_score"])
-    sim_score = simi_cnt_df[title].sort_values(ascending=False)[1:11]
-    return pd.DataFrame({"movie": sim_score.index, "content_score": sim_score.values})
+    
+    if title not in title_to_idx:
+        return pd.DataFrame(columns=["movie", "content_score"])
+    
+    # Get the query movie's vector
+    query_idx = title_to_idx[title]
+    query_vector = tfidf_vectors[query_idx]
+    
+    # Compute similarity only for the query movie against all others
+    similarities = cosine_similarity(query_vector, tfidf_vectors).flatten()
+    
+    # Get top-k similar movies (excluding the query movie itself)
+    similar_indices = np.argsort(similarities)[::-1][1:top_k+1]
+    
+    recommendations = []
+    for idx in similar_indices:
+        if similarities[idx] > 0:  # Only include movies with positive similarity
+            recommendations.append({
+                'movie': all_titles[idx],
+                'content_score': similarities[idx]
+            })
+    
+    return pd.DataFrame(recommendations)
 
-def collaborative_recommend(title, simi_colb_df):
-    """Collaborative filtering recommendation"""
+def collaborative_recommend_on_demand(title, rating_vectors, title_to_idx, all_titles, top_k=10):
+    """Collaborative filtering with on-demand similarity computation"""
     title = title.lower()
-    if title not in simi_colb_df.index:
-        return pd.DataFrame(columns=["movie","collab_score"])
-    simi_scores = simi_colb_df[title].sort_values(ascending=False)[1:11]
-    return pd.DataFrame({"movie": simi_scores.index, "collab_score": simi_scores.values})
+    
+    if title not in title_to_idx:
+        return pd.DataFrame(columns=["movie", "collab_score"])
+    
+    # Get the query movie's rating vector
+    query_idx = title_to_idx[title]
+    query_vector = rating_vectors[query_idx:query_idx+1]  # Keep 2D shape for cosine_similarity
+    
+    # Compute similarity only for the query movie against all others
+    similarities = cosine_similarity(query_vector, rating_vectors).flatten()
+    
+    # Get top-k similar movies (excluding the query movie itself)
+    similar_indices = np.argsort(similarities)[::-1][1:top_k+1]
+    
+    recommendations = []
+    for idx in similar_indices:
+        if similarities[idx] > 0:  # Only include movies with positive similarity
+            recommendations.append({
+                'movie': all_titles[idx],
+                'collab_score': similarities[idx]
+            })
+    
+    return pd.DataFrame(recommendations)
 
-def hybrid_recommendation(title, simi_cnt_df, simi_colb_df):
-    """Hybrid recommendation system"""
-    content_df = content_recommend(title, simi_cnt_df)
-    collab_df = collaborative_recommend(title, simi_colb_df)
+def hybrid_recommendation_on_demand(title, content_data, collab_data):
+    """Hybrid recommendation system with on-demand computation"""
+    tfidf_vectors, content_title_to_idx, content_titles = content_data
+    rating_vectors, collab_title_to_idx, collab_titles = collab_data
+    
+    # Get content-based recommendations
+    content_df = content_recommend_on_demand(title, tfidf_vectors, content_title_to_idx, content_titles)
+    
+    # Get collaborative filtering recommendations
+    collab_df = collaborative_recommend_on_demand(title, rating_vectors, collab_title_to_idx, collab_titles)
 
     if content_df.empty and collab_df.empty:
-        return pd.DataFrame(columns=["movie","final_score"])
+        return pd.DataFrame(columns=["movie", "final_score"])
     
+    # Combine recommendations
     combined = pd.merge(content_df, collab_df, on='movie', how='outer').fillna(0)
 
     if not combined.empty:
+        # Normalize scores
         scaler = MinMaxScaler()
-        combined[['content_scaled','collab_scaled']] = scaler.fit_transform(
-            combined[['content_score','collab_score']]
+        combined[['content_scaled', 'collab_scaled']] = scaler.fit_transform(
+            combined[['content_score', 'collab_score']]
         )
 
+        # Hybrid scoring (30% content, 70% collaborative)
         combined['final_score'] = 0.3 * combined['content_scaled'] + 0.7 * combined['collab_scaled']
-        final_recommendation = combined.sort_values('final_score', ascending=False)[['movie','final_score']][:10]
-
+        
+        # Return top 10 recommendations
+        final_recommendation = combined.sort_values('final_score', ascending=False)[['movie', 'final_score']][:10]
         return final_recommendation.reset_index(drop=True)
     
-    return pd.DataFrame(columns=["movie","final_score"])
+    return pd.DataFrame(columns=["movie", "final_score"])
 
 def display_movie_card(rank, title, score):
     """Display a movie recommendation card"""
@@ -364,8 +411,10 @@ def main():
     try:
         with st.spinner("🔄 Loading movie database..."):
             movie_df, rating_df = load_data()
-            simi_cnt_df = build_content_similarity(movie_df)
-            simi_colb_df = build_collaborative_similarity(movie_df, rating_df)
+            
+            # Build vectors for on-demand similarity computation
+            content_data = build_content_vectors(movie_df)
+            collab_data = build_collaborative_vectors(movie_df, rating_df)
         
         # Search section
         st.markdown('<div class="search-container">', unsafe_allow_html=True)
@@ -407,8 +456,8 @@ def main():
                 # Simulate processing steps with progress
                 steps = [
                     " Analyzing movie preferences...",
-                    " Computing content similarities...",
-                    " Finding collaborative patterns...",
+                    " Computing content similarities on-demand...",
+                    " Finding collaborative patterns on-demand...",
                     " Generating hybrid recommendations...",
                     " Finalizing top picks..."
                 ]
@@ -422,11 +471,11 @@ def main():
                 progress_bar.empty()
                 status_text.empty()
                 
-                # Get recommendations
-                recommendations = hybrid_recommendation(movie_input, simi_cnt_df, simi_colb_df)
+                # Get recommendations using on-demand computation
+                recommendations = hybrid_recommendation_on_demand(movie_input, content_data, collab_data)
                 
                 if recommendations.empty:
-                    st.warning(" Sorry, we couldn't find recommendations for this movie. It might not be in our database or have enough data.")
+                    st.warning("⚠️ Sorry, we couldn't find recommendations for this movie. It might not be in our database or have enough data.")
                 else:
                     st.markdown(f'<div class="section-header"> Top Recommendations for "{movie_input.title()}"</div>', unsafe_allow_html=True)
                     
@@ -442,7 +491,7 @@ def main():
                         st.metric("🎬 Total Recommendations", len(recommendations))
                     with col2:
                         avg_score = recommendations['final_score'].mean()
-                        st.metric("📈 Average Match Score", f"{avg_score:.2%}")
+                        st.metric("📊 Average Match Score", f"{avg_score:.2%}")
                     with col3:
                         top_score = recommendations['final_score'].max()
                         st.metric("🏆 Best Match Score", f"{top_score:.2%}")
@@ -450,8 +499,7 @@ def main():
         # Footer
         st.markdown("""
         <div class="footer">
-            <p>🎬 Movie Recommender Pro | Powered by Hybrid Recommending Technology</p>
-            <p>Combining Content-Based & Collaborative Filtering for Better Recommendations</p>
+            <p>🎬 Movie Recommender Pro | Powered by Hybrid Recommendation Technology</p>
         </div>
         """, unsafe_allow_html=True)
         
