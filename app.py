@@ -333,7 +333,7 @@ def collaborative_recommend_on_demand(title, rating_vectors, title_to_idx, all_t
     
     # Get the query movie's rating vector
     query_idx = title_to_idx[title]
-    query_vector = rating_vectors[query_idx:query_idx+1]  # Keep 2D shape for cosine_similarity
+    query_vector = rating_vectors[query_idx].reshape(1,-1)  # Keep 2D shape for cosine_similarity
     
     # Compute similarity only for the query movie against all others
     similarities = cosine_similarity(query_vector, rating_vectors).flatten()
