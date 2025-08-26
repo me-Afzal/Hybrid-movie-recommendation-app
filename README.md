@@ -5,7 +5,8 @@ Movie Recommender Pro is a **hybrid movie recommendation system** built with **S
 It helps users discover their next favorite movie by leveraging both movie metadata (genres) and user rating patterns.  
 
 ---
-
+### App-Link: https://hybrid-movie-recommend-app.streamlit.app/
+---
 ## 🚀 Features
 
 ✅ **Hybrid Recommendation Engine** – Combines **Content-Based** and **Collaborative Filtering**  
