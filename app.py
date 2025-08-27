@@ -369,7 +369,8 @@ def hybrid_recommendation_on_demand(title, content_data, collab_data):
     
     # Combine recommendations
     combined = pd.merge(content_df, collab_df, on='movie', how='outer').fillna(0)
-
+    combined = combined.loc[combined['movie'] != title]
+    
     if not combined.empty:
         # Normalize scores
         scaler = MinMaxScaler()
