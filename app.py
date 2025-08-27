@@ -267,12 +267,14 @@ st.markdown("""
 def load_data():
     """Load and preprocess data with caching"""
     movie_df = pd.read_csv("movies.csv")
+    og_titles = movie_df['title']
+    # Normalize titles to lowercase for consistent matching
     movie_df['title'] = movie_df['title'].apply(lambda t: t.lower())
     
     rating_df = pd.read_csv("ratings.csv")
     rating_df = rating_df.drop(columns=['timestamp'])
     
-    return movie_df, rating_df
+    return movie_df, rating_df,og_titles
 
 @st.cache_data
 def build_content_vectors(movie_df):
@@ -410,7 +412,7 @@ def main():
     # Load data
     try:
         with st.spinner("🔄 Loading movie database..."):
-            movie_df, rating_df = load_data()
+            movie_df, rating_df, og_titles = load_data()
             
             # Build vectors for on-demand similarity computation
             content_data = build_content_vectors(movie_df)
@@ -432,7 +434,7 @@ def main():
         col1, col2 = st.columns([4, 1], gap="medium")
         
         with col1:
-            all_movies = sorted(list(movie_df['title'].unique()))
+            all_movies = sorted(list(og_titles.unique()))
             movie_input = st.selectbox(
                 "Search for a movie",  # Proper label for accessibility
                 options=all_movies,
@@ -472,6 +474,7 @@ def main():
                 status_text.empty()
                 
                 # Get recommendations using on-demand computation
+                movie_input = movie_input.lower()
                 recommendations = hybrid_recommendation_on_demand(movie_input, content_data, collab_data)
                 
                 if recommendations.empty:
